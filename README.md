@@ -1,10 +1,10 @@
 # A rate-limited course-order worker
 
-The decision is to move one observable workflow from Celery/BullMQ into a small Spring-style Java service: checkout jobs become queue payloads, a worker consumes a bounded batch, fulfillment is selected from payment and stock, and the customer-facing receipt message follows that decision. Infrai keeps the queue calls behind one key, so the example has one narrow integration boundary to teach and replace.
+We pulled one observable workflow out of Celery/BullMQ and into a small Spring-style Java service. Checkout jobs become queue payloads, a worker pulls a bounded batch, fulfillment gets picked from payment and stock state, and the receipt message to the customer follows that call. Infrai keeps the queue calls behind one key, so there's a single narrow integration boundary to teach and later swap.
 
 ## Run the lesson
 
-This repository uses only the JDK (Java 17 or newer).
+You only need the JDK (Java 17 or newer) to run this repo.
 
 ```bash
 export INFRAI_API_KEY=your-key
@@ -14,24 +14,24 @@ java -cp out example.OrderWorkflowTest
 java -cp out example.QueueWorkerApplication
 ```
 
-The deterministic test feeds `{paid:true, stockAvailable:false}` and expects `BACKORDERED`. The application publishes one course order with `queue.publish`, asks for one visible message with `queue.consume`, then prints the fulfillment decision. A live consume response supplies its `message_id` for `queue.ack` after processing.
+The deterministic test feeds `{paid:true, stockAvailable:false}` and expects `BACKORDERED`. The app publishes one course order with `queue.publish`, then asks for one visible message with `queue.consume`, and prints the fulfillment decision. A live consume response hands back its `message_id` for `queue.ack` after processing.
 
 ## The worker boundary
 
-`InfraiClient` makes explicit `POST` requests to `/v1/queue/publish`, `/v1/queue/consume`, and `/v1/queue/ack`. It decodes the `{ok, data, error, metadata}` envelope before considering HTTP status, surfaces rejected envelopes, and honors `Retry-After` during exponential backoff for 429 responses. Publish and acknowledgement carry an `Idempotency-Key` so a retry keeps the same operation identity.
+`InfraiClient` makes explicit `POST` requests to `/v1/queue/publish`, `/v1/queue/consume`, and `/v1/queue/ack`. It decodes the `{ok, data, error, metadata}` envelope before looking at HTTP status, surfaces rejected envelopes, and honors `Retry-After` during exponential backoff on 429s. Publish and ack carry an `Idempotency-Key` so a retry preserves the same operation identity.
 
-The one real gotcha is visibility: acknowledge only after checkout, fulfillment selection, and receipt preparation finish; otherwise another worker may legitimately receive the still-visible message.
+Visibility is the gotcha I keep warning about: ack only after checkout, fulfillment selection, and receipt prep are done. Miss that and another worker will happily pick up the still-visible message. In SMS/OTP land that's a double-send; here it's a duplicate order.
 
 ## Cutover and rollback
 
 1. Run the focused test, then publish a sample order to a staging queue.
 2. Compare the worker's `FULFILLMENT_READY` and `BACKORDERED` counts with the incumbent for one class session.
-3. Shift consumers gradually while keeping the incumbent paused but deployable.
-4. Roll back by stopping this worker, resume the incumbent consumer, and leave already acknowledged orders untouched; replay only messages still visible in the queue.
+3. Shift consumers gradually while the old worker stays paused but deployable.
+4. Roll back by stopping this worker, resuming the incumbent consumer, and leaving acknowledged orders alone. Replay only messages still visible in the queue.
 
 ## Why this is reusable
 
-The domain rule is deliberately small enough for a course exercise and concrete enough for a service: payment gates fulfillment, stock gates the customer message, and the queue transport can be swapped without changing that decision. Infrai is plain REST from Java with no SDK to install, while the application still reads a single `INFRAI_API_KEY` from the environment.
+The domain rule is tiny enough for a course but real enough for production: payment gates fulfillment, stock gates the customer message, and the queue transport can be replaced without touching that logic. Infrai is plain REST from Java with no SDK to install, and the app still reads a single `INFRAI_API_KEY` from the environment.
 
 ## License
 
@@ -39,7 +39,7 @@ MIT
 
 ## Wiring it up for real: Course Order Queue Worker
 
-Quick start is above. For a real deployment you'll also need: The details below apply to Course Order Queue Worker.
+The quick start is above. For a real deployment you'll also need the details below, which apply to Course Order Queue Worker.
 
 **Account & key**
 
